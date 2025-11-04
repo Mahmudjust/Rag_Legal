@@ -78,7 +78,7 @@ Question: {query}
 Answer:"""
 
     genai.configure(api_key=GEMINI_API_KEY)
-    response = genai.GenerativeModel("gemini-1.5-flash").generate_content(prompt)
+    response = genai.GenerativeModel("models/gemini-2.5-flash").generate_content(prompt)
     return response.text
 
 # === MAIN APP ===
