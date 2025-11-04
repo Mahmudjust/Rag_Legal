@@ -18,7 +18,7 @@ st.title("Ask About the Legal Document")
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
 # CHANGE THIS LINE ONLY — YOUR PDF
-PDF_URL = "https://drive.google.com/uc?export=download&id=YOUR_FILE_ID_HERE"
+PDF_URL = "https://drive.google.com/uc?export=download&id=16VbhsygSSfHek-j31j_SkxSFdnEmrDEf"
 
 # === 1. DOWNLOAD PDF ===
 @st.cache_data(show_spinner=False)
