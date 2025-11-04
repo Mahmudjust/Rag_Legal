@@ -23,7 +23,7 @@ HF_TOKEN       = st.secrets.get("HF_TOKEN", "")   # optional, not used here
 # ---- Fixed PDF (Google-Drive direct-download) ----
 #   1. Make the file "Anyone with the link → Viewer"
 #   2. Replace YOUR_FILE_ID with the ID from the share link
-PDF_URL = "https://drive.google.com/uc?export=download&id=YOUR_FILE_ID"
+PDF_URL = "https://drive.google.com/uc?export=download&id=16VbhsygSSfHek-j31j_SkxSFdnEmrDEf"
 
 # -------------------------------------------------
 # 1. DOWNLOAD PDF (cached)
