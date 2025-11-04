@@ -1,20 +1,15 @@
-# ---- Base image ----
-FROM python:3.11-slim
+FROM python:3.13-slim
 
-# ---- System packages (poppler-utils for pdftotext) ----
+# Install pdftotext (system tool)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        poppler-utils \
-        build-essential && \
+    apt-get install -y --no-install-recommends poppler-utils && \
     rm -rf /var/lib/apt/lists/*
 
-# ---- Python dependencies ----
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---- App code ----
 COPY main.py .
 
 EXPOSE 8501
-CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.enableCORS=false"]
+CMD ["streamlit", "run", "main.py", "--server.port=8501"]
