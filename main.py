@@ -1,153 +1,97 @@
 import streamlit as st
-import os
-import tempfile
-import subprocess
 import requests
+import tempfile
 import numpy as np
 
-
-
+# === CORRECT IMPORTS ===
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from sentence_transformers import SentenceTransformer
 import faiss
 import google.generativeai as genai
+import fitz  # PyMuPDF — replaces pdftotext
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
-st.set_page_config(page_title="Fixed-PDF RAG (Bangla)", layout="centered")
-st.title("Ask Anything About the Fixed Document")
+# === CONFIG ===
+st.set_page_config(page_title="RAG Legal", layout="centered")
+st.title("Ask About the Legal Document")
 
-# ---- Secrets (set in Streamlit → Settings → Secrets) ----
+# Get API key from Streamlit Secrets
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-HF_TOKEN       = st.secrets.get("HF_TOKEN", "")   # optional, not used here
 
-# ---- Fixed PDF (Google-Drive direct-download) ----
-#   1. Make the file "Anyone with the link → Viewer"
-#   2. Replace YOUR_FILE_ID with the ID from the share link
-PDF_URL = "https://drive.google.com/uc?export=download&id=16VbhsygSSfHek-j31j_SkxSFdnEmrDEf"
+# CHANGE THIS LINE ONLY — YOUR PDF
+PDF_URL = "https://drive.google.com/uc?export=download&id=YOUR_FILE_ID_HERE"
 
-# -------------------------------------------------
-# 1. DOWNLOAD PDF (cached)
-# -------------------------------------------------
+# === 1. DOWNLOAD PDF ===
 @st.cache_data(show_spinner=False)
 def download_pdf(url: str) -> str:
-    """Download PDF from Google-Drive and return local path."""
     headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, stream=True)
-    if r.status_code != 200:
-        st.error(f"Download failed (status {r.status_code}). Check the URL.")
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200 or not response.content.startswith(b"%PDF"):
+        st.error("Invalid PDF. Use Google Drive direct link: `uc?export=download&id=...`")
         st.stop()
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tmp_file.write(response.content)
+    tmp_file.close()
+    return tmp_file.name
 
-    # sanity-check
-    if len(r.content) < 1000:
-        st.error("File too small – probably got HTML instead of PDF.")
-        st.stop()
-    if not r.content.startswith(b"%PDF"):
-        st.error("Downloaded file is NOT a PDF. Use the direct-download URL.")
-        st.stop()
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    tmp.write(r.content)
-    tmp.close()
-    return tmp.name
-
-
-# -------------------------------------------------
-# 2. PDF → TEXT (pdftotext)
-# -------------------------------------------------
-@st.cache_data(show_spinner="Extracting text …")
+# === 2. EXTRACT TEXT USING PyMuPDF (fitz) ===
+@st.cache_data(show_spinner="Extracting text with PyMuPDF...")
 def pdf_to_text(pdf_path: str) -> str:
-    """Run pdftotext (installed on the container) and return full text."""
-    # poppler-utils is installed via apt-get in the container (see Dockerfile below)
-    result = subprocess.run(
-        ["pdftotext", "-layout", pdf_path, "-"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text("text")  # Preserves layout
+    doc.close()
+    return text
 
+# === 3. BUILD RAG INDEX ===
+@st.cache_resource(show_spinner="Building FAISS index...")
+def build_index():
+    pdf_path = download_pdf(PDF_URL)
+    full_text = pdf_to_text(pdf_path)
 
-# -------------------------------------------------
-# 3. CHUNK + EMBED + FAISS (cached once)
-# -------------------------------------------------
-@st.cache_resource(show_spinner="Building index …")
-def build_index(_pdf_path: str):
-    # 3a – text
-    full_text = pdf_to_text(_pdf_path)
-
-    # 3b – chunk
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
-        separators=["\n\n", "\n", "।", ".", "!", "?", " ", ""],
-        keep_separator=True,
-    )
+    # Chunk text
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_text(full_text)
 
-    # 3c – embed
-    embedder = SentenceTransformer("intfloat/multilingual-e5-large")
-    vectors = embedder.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+    # Embeddings
+    model = SentenceTransformer("intfloat/multilingual-e5-large")
+    vectors = model.encode(chunks, normalize_embeddings=True)
 
-    # 3d – FAISS
-    dim = vectors.shape[1]
-    index = faiss.IndexFlatL2(dim)
+    # FAISS index
+    dimension = vectors.shape[1]
+    index = faiss.IndexFlatL2(dimension)
     index.add(np.array(vectors))
 
-    return chunks, index, embedder
+    return chunks, index, model
 
+# === 4. ANSWER QUERY ===
+def answer_query(query: str, chunks, index, model):
+    q_vec = model.encode([query], normalize_embeddings=True)
+    D, I = index.search(np.array(q_vec), k=3)
+    context = "\n\n".join([chunks[i] for i in I[0] if i != -1])
 
-# -------------------------------------------------
-# 4. RETRIEVAL + GEMINI ANSWER
-# -------------------------------------------------
-def answer_question(query: str, chunks, faiss_index, embedder):
-    # embed query
-    q_vec = embedder.encode([query], normalize_embeddings=True)
+    prompt = f"""Use only the following context to answer in Bangla:
 
-    # retrieve top-k
-    k = 3
-    D, I = faiss_index.search(np.array(q_vec), k)
-    retrieved = [chunks[i] for i in I[0] if i != -1]
-
-    # build prompt
-    context = "\n\n".join(retrieved)
-    prompt = f"""
-Use **only** the following context to answer the question in Bangla.
-
-Context:
 {context}
 
 Question: {query}
-Answer:
-"""
+Answer:"""
 
-    # call Gemini
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")   # works with 2.5-flash too
-    response = model.generate_content(prompt)
-    return response.text, retrieved
+    response = genai.GenerativeModel("gemini-1.5-flash").generate_content(prompt)
+    return response.text
 
+# === MAIN APP ===
+try:
+    chunks, index, model = build_index()
+    st.success("Document loaded! Ask in Bangla.")
+except Exception as e:
+    st.error(f"Failed to load document: {e}")
+    st.stop()
 
-# -------------------------------------------------
-# MAIN APP
-# -------------------------------------------------
-pdf_path = download_pdf(PDF_URL)
-chunks, faiss_index, embedder = build_index(pdf_path)
-
-st.success("Document loaded – ask anything in Bangla!")
-
-question = st.text_input("Your question:", placeholder="উদাহরণ: মহাপরিচালক কীভাবে তথ্য-উপাত্ত ব্লক করতে পারেন?")
-
-if question:
-    with st.spinner("Retrieving & generating answer …"):
-        answer, sources = answer_question(question, chunks, faiss_index, embedder)
-
-    st.markdown("### Answer")
+query = st.text_input("প্রশ্ন লিখুন:")
+if query:
+    with st.spinner("উত্তর তৈরি হচ্ছে..."):
+        answer = answer_query(query, chunks, index, model)
+    st.markdown("**উত্তর:**")
     st.write(answer)
-
-    with st.expander("Sources (top 3 chunks)"):
-        for i, src in enumerate(sources, 1):
-            st.markdown(f"**Chunk {i}:**")
-            st.code(src[:500] + ("…" if len(src) > 500 else ""), language="text")
