@@ -5,7 +5,10 @@ import subprocess
 import requests
 import numpy as np
 
-from langchain.text_splitters import RecursiveCharacterTextSplitter
+
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from sentence_transformers import SentenceTransformer
 import faiss
 import google.generativeai as genai
